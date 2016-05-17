@@ -45,6 +45,7 @@ NAME = 'acid.senza.templates'
 MAIN_PACKAGE = NAME
 VERSION = read_version(MAIN_PACKAGE)
 DESCRIPTION = 'Senza template for the automatic PosgreSQL DB deployments'
+URL = 'https://github.com/zalando-incubator/senza-base-template'
 AUTHOR = 'Oleksii Kliukin'
 AUTHOR_EMAIL = 'oleksii.kliukin@zalando.de'
 KEYWORDS = 'senza postgres'
@@ -57,6 +58,7 @@ def setup_packages():
     setup(
         name=NAME,
         version=VERSION,
+        url=URL,
         description=DESCRIPTION,
         packages=[NAME],
         install_requires=install_reqs,
