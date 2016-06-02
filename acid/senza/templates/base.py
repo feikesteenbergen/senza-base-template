@@ -136,7 +136,12 @@ Resources:
       Type: CNAME
       TTL: 20
       HostedZoneName: {{hosted_zone}}
+      {{#replica_dns_name}}
+      Name: {{replica_dns_name}}
+      {{/replica_dns_name}}
+      {{^replica_dns_name}}
       Name: "{{version}}-replica.{{team_name}}.{{hosted_zone}}"
+      {{/replica_dns_name}}
       ResourceRecords:
         - Fn::GetAtt:
            - PostgresReplicaLoadBalancer
@@ -175,7 +180,12 @@ Resources:
       Type: CNAME
       TTL: 20
       HostedZoneName: {{hosted_zone}}
+      {{#master_dns_name}}
+      Name: {{master_dns_name}}
+      {{/master_dns_name}}
+      {{^master_dns_name}}
       Name: "{{version}}.{{team_name}}.{{hosted_zone}}"
+      {{/master_dns_name}}
       ResourceRecords:
         - Fn::GetAtt:
            - PostgresLoadBalancer
@@ -359,6 +369,7 @@ def set_default_variables(variables):
     # End of required variables #
     variables.setdefault('add_replica_loadbalancer', False)
     variables.setdefault('discovery_domain', None)
+    variables.setdefault('master_dns_name', None)
     variables.setdefault('docker_image', get_latest_image())
     variables.setdefault('ebs_optimized', None)
     variables.setdefault('fsoptions', 'noatime,nodiratime,nobarrier')
@@ -367,6 +378,7 @@ def set_default_variables(variables):
     variables.setdefault('hosted_zone', None)
     variables.setdefault('instance_type', 't2.medium')
     variables.setdefault('ldap_url', None)
+    variables.setdefault('ldap_suffix', None)
     variables.setdefault('kms_arn', None)
     variables.setdefault('odd_sg_id', None)
     variables.setdefault('pgpassword_admin', generate_random_password())
@@ -375,6 +387,7 @@ def set_default_variables(variables):
     variables.setdefault('postgresqlconf', None)
     variables.setdefault('postgres_port', POSTGRES_PORT)
     variables.setdefault('promotheus_port', '9100')
+    variables.setdefault('replica_dns_name', None)
     variables.setdefault('scalyr_account_key', None)
     variables.setdefault('snapshot_id', None)
     variables.setdefault('use_ebs', True)
@@ -383,7 +396,6 @@ def set_default_variables(variables):
     variables.setdefault('volume_type', 'gp2')
     variables.setdefault('wal_s3_bucket', None)
     variables.setdefault('zmon_sg_id', None)
-    variables.setdefault('ldap_suffix', None)
 
     return variables
 
@@ -416,6 +428,17 @@ def gather_user_variables(variables, account_info, region):
         url = urlparse(variables['ldap_url'])
         if url.path and url.path[0] == '/':
             variables['ldap_suffix'] = url.path[1:]
+
+    # make sure all DNS names belong to the hosted zone
+    for v in ('master_dns_name', 'replica_dns_name'):
+        if variables[v] and not check_dns_name(variables[v], variables['hosted_zone'][:-1]):
+            fatal_error("{0} should end with {1}".format(v.replace('_', ' '), variables['hosted_zone'][:-1]))
+
+    # if master DNS name is specified but not the replica one - derive the replica name from the master
+    if variables['master_dns_name'] and not variables['replica_dns_name']:
+        replica_dns_components = variables['master_dns_name'].split('.')
+        replica_dns_components[0] += '-repl'
+        variables['replica_dns_name'] = '.'.join(replica_dns_components)
 
     if variables['ldap_url'] and not variables['ldap_suffix']:
         fatal_error("LDAP URL is missing the suffix: shoud be in a format: "
@@ -466,6 +489,16 @@ def gather_user_variables(variables, account_info, region):
     check_s3_bucket(variables['wal_s3_bucket'], region.Region)
 
     return variables
+
+
+def check_dns_name(name, hosted_zone):
+    """
+    >>> check_dns_name('foo.bar.example.com')
+    False
+    >>> check_dns_name('foo.bar.' + hosted_zone )
+    True
+    """
+    return name.endswith(hosted_zone)
 
 
 def generate_random_password(length=64):
