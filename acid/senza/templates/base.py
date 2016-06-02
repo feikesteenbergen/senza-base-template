@@ -2,14 +2,16 @@
 The template for the PostgreSQL-based Database as a Service.
 '''
 
+import random
+import string
+from urllib.parse import urlparse
+
+import boto3
+import requests
 import dns.resolver
 from clickclick import fatal_error
 from senza.aws import encrypt, list_kms_keys, get_security_group
 from senza.utils import pystache_render
-import requests
-import random
-import string
-import boto3
 
 
 from senza.templates._helper import check_s3_bucket, get_account_alias
@@ -90,6 +92,9 @@ SenzaComponents:
           PGPASSWORD_ADMIN: "{{pgpassword_admin}}"
           PGPASSWORD_STANDBY: "{{pgpassword_standby}}"
           BACKUP_SCHEDULE: "00 01 * * *"
+          {{#ldap_url}}
+          LDAP_URL: {{ldap_url}}
+          {{/ldap_url}}
           PATRONI_CONFIGURATION: | ## https://github.com/zalando/patroni#yaml-configuration
             postgresql:
                 {{#postgresqlconf}}
@@ -98,6 +103,9 @@ SenzaComponents:
                 {{/postgresqlconf}}
                 pg_hba:
                     - hostnossl all all all reject
+                    {{#ldap_suffix}}
+                    - hostssl   all +zalandos all ldap ldapserver="localhost" ldapprefix="uid=" ldapsuffix=",{{ldap_suffix}}"
+                    {{/ldap_suffix}}
                     - hostssl   all all all md5
         root: True
         sysctl:
@@ -128,7 +136,12 @@ Resources:
       Type: CNAME
       TTL: 20
       HostedZoneName: {{hosted_zone}}
+      {{#replica_dns_name}}
+      Name: {{replica_dns_name}}
+      {{/replica_dns_name}}
+      {{^replica_dns_name}}
       Name: "{{version}}-replica.{{team_name}}.{{hosted_zone}}"
+      {{/replica_dns_name}}
       ResourceRecords:
         - Fn::GetAtt:
            - PostgresReplicaLoadBalancer
@@ -167,7 +180,12 @@ Resources:
       Type: CNAME
       TTL: 20
       HostedZoneName: {{hosted_zone}}
+      {{#master_dns_name}}
+      Name: {{master_dns_name}}
+      {{/master_dns_name}}
+      {{^master_dns_name}}
       Name: "{{version}}.{{team_name}}.{{hosted_zone}}"
+      {{/master_dns_name}}
       ResourceRecords:
         - Fn::GetAtt:
            - PostgresLoadBalancer
@@ -351,6 +369,7 @@ def set_default_variables(variables):
     # End of required variables #
     variables.setdefault('add_replica_loadbalancer', False)
     variables.setdefault('discovery_domain', None)
+    variables.setdefault('master_dns_name', None)
     variables.setdefault('docker_image', get_latest_image())
     variables.setdefault('ebs_optimized', None)
     variables.setdefault('fsoptions', 'noatime,nodiratime,nobarrier')
@@ -358,6 +377,8 @@ def set_default_variables(variables):
     variables.setdefault('healthcheck_port', HEALTHCHECK_PORT)
     variables.setdefault('hosted_zone', None)
     variables.setdefault('instance_type', 't2.medium')
+    variables.setdefault('ldap_url', None)
+    variables.setdefault('ldap_suffix', None)
     variables.setdefault('kms_arn', None)
     variables.setdefault('odd_sg_id', None)
     variables.setdefault('pgpassword_admin', generate_random_password())
@@ -366,6 +387,7 @@ def set_default_variables(variables):
     variables.setdefault('postgresqlconf', None)
     variables.setdefault('postgres_port', POSTGRES_PORT)
     variables.setdefault('promotheus_port', '9100')
+    variables.setdefault('replica_dns_name', None)
     variables.setdefault('scalyr_account_key', None)
     variables.setdefault('snapshot_id', None)
     variables.setdefault('use_ebs', True)
@@ -401,14 +423,37 @@ def gather_user_variables(variables, account_info, region):
         if variables[name][-1] != '.':
             variables[name] += '.'
 
+    # split the ldap url into the URL and suffix (path component)
+    if variables['ldap_url']:
+        url = urlparse(variables['ldap_url'])
+        if url.path and url.path[0] == '/':
+            variables['ldap_suffix'] = url.path[1:]
+
+    # make sure all DNS names belong to the hosted zone
+    for v in ('master_dns_name', 'replica_dns_name'):
+        if variables[v] and not check_dns_name(variables[v], variables['hosted_zone'][:-1]):
+            fatal_error("{0} should end with {1}".format(v.replace('_', ' '), variables['hosted_zone'][:-1]))
+
+    # if master DNS name is specified but not the replica one - derive the replica name from the master
+    if variables['master_dns_name'] and not variables['replica_dns_name']:
+        replica_dns_components = variables['master_dns_name'].split('.')
+        replica_dns_components[0] += '-repl'
+        variables['replica_dns_name'] = '.'.join(replica_dns_components)
+
+    if variables['ldap_url'] and not variables['ldap_suffix']:
+        fatal_error("LDAP URL is missing the suffix: shoud be in a format: "
+                    "ldap[s]://example.com[:port]/ou=people,dc=example,dc=com")
+
     # pick up the proper etcd address depending on the region
     variables['discovery_domain'] = detect_etcd_discovery_domain_for_region(variables['hosted_zone'],
                                                                             region.Region)
 
     # get the IP addresses of the NAT gateways to acess a given ELB.
     variables['nat_gateway_addresses'] = detect_eu_team_nat_gateways(variables['team_gateway_zone'])
+    variables['odd_instance_addresses'] = detect_eu_team_odd_instances(variables['team_gateway_zone'])
     variables['spilo_security_group_ingress_rules_block'] = \
-        generate_spilo_master_security_group_ingress(variables['nat_gateway_addresses'])
+        generate_spilo_master_security_group_ingress(variables['nat_gateway_addresses'] +
+                                                     variables['odd_instance_addresses'])
 
     if variables['postgresqlconf']:
         variables['postgresqlconf'] = generate_postgresql_configuration(variables['postgresqlconf'])
@@ -426,7 +471,7 @@ def gather_user_variables(variables, account_info, region):
 
     # pick up the first key with a description containing spilo
     kms_keys = [k for k in list_kms_keys(region.Region)
-                if 'alias/aws/ebs' not in k['aliases'] and 'spilo' in k['Description']]
+                if 'alias/aws/ebs' not in k['aliases'] and 'spilo' in ((k['Description']).lower())]
 
     if len(kms_keys) == 0:
         raise fatal_error('No KMS key is available for encrypting and decrypting. '
@@ -444,6 +489,16 @@ def gather_user_variables(variables, account_info, region):
     check_s3_bucket(variables['wal_s3_bucket'], region.Region)
 
     return variables
+
+
+def check_dns_name(name, hosted_zone):
+    """
+    >>> check_dns_name('foo.bar.example.com')
+    False
+    >>> check_dns_name('foo.bar.' + hosted_zone )
+    True
+    """
+    return name.endswith(hosted_zone)
 
 
 def generate_random_password(length=64):
@@ -464,10 +519,10 @@ def generate_definition(variables):
     return definition_yaml
 
 
-def generate_spilo_master_security_group_ingress(nat_gateway_addresses):
+def generate_spilo_master_security_group_ingress(addresses_to_allow):
     result = ""
-    for addr in nat_gateway_addresses:
-        if addr != nat_gateway_addresses[0]:
+    for addr in addresses_to_allow:
+        if addr != addresses_to_allow[0]:
             result += '\n'+' ' * 8
         result += "- IpProtocol: tcp{delim}FromPort: {port}{delim}ToPort: {port}{delim}CidrIp: {ip}/32".\
                   format(port=POSTGRES_PORT, ip=addr, delim='\n' + ' ' * 10)
@@ -556,6 +611,25 @@ def detect_eu_team_nat_gateways(team_zone_name):
     if not nat_gateways:
         fatal_error("Unable to detect nat gateways: make sure {0} account is set up correctly".format(team_zone_name))
     return nat_gateways
+
+
+def detect_eu_team_odd_instances(team_zone_name):
+    """
+      Detect the odd instances by name. Same reliance on a convention as with
+      the detect_eu_team_nat_gateways.
+    """
+    resolver = dns.resolver.Resolver()
+    odd_hosts = []
+    for region in ('eu-west-1', 'eu-central-1'):
+        try:
+            answer = resolver.query('odd-{region}.{zone}'.format(region=region, zone=team_zone_name))
+            odd_hosts.extend(str(rdata) for rdata in answer)
+        except dns.resolver.NXDOMAIN:
+            continue
+
+    if not odd_hosts:
+        fatal_error("Unable to detect odd hosts: make sure {0} account is set up correctly".format(team_zone_name))
+    return odd_hosts
 
 
 def detect_zmon_security_group(region):
