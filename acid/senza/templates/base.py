@@ -160,7 +160,7 @@ Resources:
         - InstancePort: {{postgres_port}}
           LoadBalancerPort: {{postgres_port}}
           Protocol: TCP
-      LoadBalancerName: "spilo-{{version}}-replica"
+      LoadBalancerName: "spilo-{{version}}-repl"
       ConnectionSettings:
         IdleTimeout: 3600
       SecurityGroups:
@@ -376,7 +376,7 @@ def set_default_variables(variables):
     variables.setdefault('fstype', 'ext4')
     variables.setdefault('healthcheck_port', HEALTHCHECK_PORT)
     variables.setdefault('hosted_zone', None)
-    variables.setdefault('instance_type', 't2.medium')
+    variables.setdefault('instance_type', 'm4.large')
     variables.setdefault('ldap_url', None)
     variables.setdefault('ldap_suffix', None)
     variables.setdefault('kms_arn', None)
@@ -392,7 +392,7 @@ def set_default_variables(variables):
     variables.setdefault('snapshot_id', None)
     variables.setdefault('use_ebs', True)
     variables.setdefault('volume_iops', None)
-    variables.setdefault('volume_size', 10)
+    variables.setdefault('volume_size', 50)
     variables.setdefault('volume_type', 'gp2')
     variables.setdefault('wal_s3_bucket', None)
     variables.setdefault('zmon_sg_id', None)
@@ -429,16 +429,17 @@ def gather_user_variables(variables, account_info, region):
         if url.path and url.path[0] == '/':
             variables['ldap_suffix'] = url.path[1:]
 
-    # make sure all DNS names belong to the hosted zone
-    for v in ('master_dns_name', 'replica_dns_name'):
-        if variables[v] and not check_dns_name(variables[v], variables['hosted_zone'][:-1]):
-            fatal_error("{0} should end with {1}".format(v.replace('_', ' '), variables['hosted_zone'][:-1]))
-
     # if master DNS name is specified but not the replica one - derive the replica name from the master
     if variables['master_dns_name'] and not variables['replica_dns_name']:
         replica_dns_components = variables['master_dns_name'].split('.')
         replica_dns_components[0] += '-repl'
         variables['replica_dns_name'] = '.'.join(replica_dns_components)
+
+    # make sure all DNS names belong to the hosted zone
+    for v in ('master_dns_name', 'replica_dns_name'):
+        if variables[v] and not check_dns_name(variables[v], variables['hosted_zone'][:-1]):
+            fatal_error("{0} should end with {1}".
+                        format(v.replace('_', ' '), variables['hosted_zone'][:-1]))
 
     if variables['ldap_url'] and not variables['ldap_suffix']:
         fatal_error("LDAP URL is missing the suffix: shoud be in a format: "
