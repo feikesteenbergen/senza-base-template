@@ -635,7 +635,7 @@ def detect_eu_team_odd_instances(team_zone_name):
 
 def detect_zmon_security_group(region):
     ec2 = boto3.client('ec2', region)
-    filters = [{'Name': 'tag-key', 'Values': ['StackName']}, {'Name': 'tag-value', 'Values': ['zmon-worker']}]
+    filters = [{'Name': 'tag-key', 'Values': ['StackName']}, {'Name': 'tag-value', 'Values': ['zmon-appliance']}]
     zmon_sgs = list()
     for reservation in ec2.describe_instances(Filters=filters).get('Reservations', []):
         for instance in reservation.get('Instances', []):
