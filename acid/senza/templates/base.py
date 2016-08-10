@@ -97,8 +97,15 @@ SenzaComponents:
           {{/ldap_url}}
           PATRONI_CONFIGURATION: | ## https://github.com/zalando/patroni#yaml-configuration
             postgresql:
-                {{#postgresqlconf}}
                 parameters:
+                    logging_collector: on
+                    log_destination: csvlog
+                    log_directory: pg_log
+                    log_filename: postgresql-%u
+                    log_file_mode: 0644
+                    log_rotation_age: 1440
+                    log_truncate_on_rotation: on
+                {{#postgresqlconf}}
                     {{postgresqlconf}}
                 {{/postgresqlconf}}
                 pg_hba:
