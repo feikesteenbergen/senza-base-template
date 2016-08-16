@@ -96,8 +96,10 @@ SenzaComponents:
           LDAP_URL: {{ldap_url}}
           {{/ldap_url}}
           PATRONI_CONFIGURATION: | ## https://github.com/zalando/patroni#yaml-configuration
-            postgresql:
-                parameters:
+            bootstrap:
+              dcs:
+                postgresql:
+                  parameters:
                     logging_collector: on
                     log_destination: csvlog
                     log_directory: pg_log
@@ -108,12 +110,12 @@ SenzaComponents:
                 {{#postgresqlconf}}
                     {{postgresqlconf}}
                 {{/postgresqlconf}}
-                pg_hba:
-                    - hostnossl all all all reject
-                    {{#ldap_suffix}}
-                    - hostssl   all +zalandos all ldap ldapserver="localhost" ldapprefix="uid=" ldapsuffix=",{{ldap_suffix}}"
-                    {{/ldap_suffix}}
-                    - hostssl   all all all md5
+              pg_hba:
+                - hostnossl all all all reject
+                {{#ldap_suffix}}
+                - hostssl   all +zalandos all ldap ldapserver="localhost" ldapprefix="uid=" ldapsuffix=",{{ldap_suffix}}"
+                {{/ldap_suffix}}
+                - hostssl   all all all md5
         root: True
         sysctl:
           vm.overcommit_memory: 2
